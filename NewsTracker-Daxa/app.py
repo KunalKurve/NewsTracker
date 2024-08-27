@@ -1,47 +1,24 @@
-# Import necessary libraries and modules
-from flask import Flask, request, render_template, jsonify                      # Flask web framework components
-import requests                                                                 # For making HTTP requests
-from bs4 import BeautifulSoup                                                   # For web scraping
-from transformers import BertTokenizer, BertForQuestionAnswering, pipeline      # For BERT model and pipeline
-from langchain_community.vectorstores import Chroma                             # For vector database
-from langchain_community.embeddings import OllamaEmbeddings                     # For embeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter             # For text splitting
-from langchain.prompts import ChatPromptTemplate, PromptTemplate                # For creating prompts
-from langchain_core.output_parsers import StrOutputParser                       # For output parsing
-from langchain_community.chat_models import ChatOllama                          # For chat models
-from langchain_core.runnables import RunnablePassthrough                        # For running tasks
-from langchain.retrievers.multi_query import MultiQueryRetriever                # For multi-query retrieval
-import nltk                                                                     # Natural Language Toolkit
-from nltk.corpus import stopwords                                               # For stopwords
-from nltk.tokenize import word_tokenize                                         # For tokenizing words
+from flask import Flask, request, render_template, jsonify
+import requests
+from bs4 import BeautifulSoup
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders.pebblo import PebbloSafeLoader
+from transformers import BertTokenizer, BertForQuestionAnswering, pipeline
+from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import OllamaEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.prompts import ChatPromptTemplate, PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_community.chat_models import ChatOllama
+from langchain_core.runnables import RunnablePassthrough
+from langchain.retrievers.multi_query import MultiQueryRetriever
+import nltk
+import os
 
-#################################################################################################################################
-
-# Download stopwords and punkt tokenizer models
-nltk.download('stopwords')
 nltk.download('punkt')
+nltk.download('stopwords')
 
-#################################################################################################################################
-
-# Initialize the Flask application
 app = Flask(__name__)
-
-#################################################################################################################################
-
-# Function to remove stopwords from text
-def remove_stopwords(text):
-    stop_words = set(stopwords.words('english'))
-    word_tokens = word_tokenize(text)
-    filtered_text = ' '.join([word for word in word_tokens if word.lower() not in stop_words])
-    return filtered_text
-
-# Function to scrape and clean text from a webpage
-def scrape_search_results(url):
-    response = requests.get(url)                                              # Fetch the webpage content
-    soup = BeautifulSoup(response.text, 'html.parser')                        # Parse the HTML content
-    text = ' '.join([p.get_text() for p in soup.find_all('p')])               # Extract text from paragraph tags
-    text = remove_stopwords(text)                                             # Remove stopwords from the text
-    return text
 
 # Define a class to handle documents
 class Document:
@@ -49,26 +26,20 @@ class Document:
         self.page_content = page_content
         self.metadata = metadata or {}
 
-#################################################################################################################################
+def scrape_search_results(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    text = ' '.join([p.get_text() for p in soup.find_all('p')])
+    return text
 
-# Load BERT QA model and tokenizer
 tokenizer = BertTokenizer.from_pretrained('bert-large-uncased-whole-word-masking-finetuned-squad')
 model = BertForQuestionAnswering.from_pretrained('bert-large-uncased-whole-word-masking-finetuned-squad')
-
-# Initialize the QA pipeline
 qa_pipeline = pipeline('question-answering', model=model, tokenizer=tokenizer)
-
-# Initialize the text splitter for document chunking
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=7500, chunk_overlap=100)
-vector_db = None                                                            # Placeholder for the vector database
-
-# Initialize the local LLM (Large Language Model) from Ollama
+vector_db = None
 local_model = "llama3"
 llm = ChatOllama(model=local_model)
 
-#################################################################################################################################
-
-# Define a prompt template for generating alternative questions
 QUERY_PROMPT = PromptTemplate(
     input_variables=["question"],
     template="""You are an AI language model assistant. Your task is to generate five
@@ -79,40 +50,53 @@ QUERY_PROMPT = PromptTemplate(
     Original question: {question}""",
 )
 
-retriever = None                                                        # Placeholder for the retriever
-chain = None                                                            # Placeholder for the QA chain
-
-#################################################################################################################################
+retriever = None
+chain = None
 
 @app.route('/')
 def index():
-    # Render the index.html template
     return render_template('index.html')
 
 @app.route('/summarize', methods=['POST'])
 def summarize():
-    url = request.form['url']                                           # Get the URL from the form
-    scraped_text = scrape_search_results(url)                           # Scrape and clean the article text
-    document = Document(scraped_text)                                   # Create a Document object
+    url = request.form.get('url')
+    file = request.files.get('file')
+    documents = []
 
-    global vector_db
-    chunks = text_splitter.split_documents([document])                  # Split the document into chunks
+    if file and file.filename.endswith('.pdf'):
+        pdf_path = os.path.join('uploads', file.filename)
+        file.save(pdf_path)
 
-    # Create a vector database from the document chunks
+        # Load the PDF using Pebblo SafeLoader
+        loader = PebbloSafeLoader(
+            PyPDFLoader(pdf_path),
+            name="RAG app 1",  # App name (Mandatory)
+            owner="Kunal Kurve",  # Owner (Optional)
+            description="Support productivity RAG application",  # Description (Optional)
+        )
+        documents = loader.load()
+
+    elif url and url.startswith(('http://', 'https://')):
+        scraped_text = scrape_search_results(url)
+        document = Document(scraped_text)
+        documents = text_splitter.split_documents([document])
+    
+    else:
+        return jsonify(error="Invalid input. Please provide a valid URL or PDF file."), 400
+
+    global vector_db, retriever, chain
     vector_db = Chroma.from_documents(
-        documents=chunks, 
+        documents=documents,
         embedding=OllamaEmbeddings(model="nomic-embed-text", show_progress=True),
         collection_name="local-rag"
     )
 
-    global retriever, chain
     retriever = MultiQueryRetriever.from_llm(
-        vector_db.as_retriever(), 
+        vector_db.as_retriever(),
         llm,
         prompt=QUERY_PROMPT
     )
 
-    # Define a prompt template for the QA system
     template = """Answer the question based ONLY on the following context:
     {context}
     Question: {question}
@@ -120,7 +104,6 @@ def summarize():
 
     prompt = ChatPromptTemplate.from_template(template)
 
-    # Define the QA chain
     chain = (
         {"context": retriever, "question": RunnablePassthrough()}
         | prompt
@@ -128,13 +111,11 @@ def summarize():
         | StrOutputParser()
     )
 
-    # Define a prompt template for summarizing the text
     summary_prompt = PromptTemplate(
         input_variables=["text"],
         template="""Summarize the following text in a concise manner:\n{text}"""
     )
 
-    # Define the summary chain
     summary_chain = (
         {"text": RunnablePassthrough()}
         | summary_prompt
@@ -142,20 +123,25 @@ def summarize():
         | StrOutputParser()
     )
 
-    # Generate the summary
-    summary = summary_chain.invoke(input=document.page_content)
+    if isinstance(documents, list) and documents:
+        summary = summary_chain.invoke(input=documents[0].page_content)
+    else:
+        summary = "No content available to summarize."
+
     return jsonify(summary=summary)
 
 @app.route('/ask', methods=['POST'])
 def ask():
-    question = request.form['question']                                 # Get the question from the form
+    global chain
+    question = request.form['question']
+    if chain is None:
+        return jsonify(answer="The system is not ready for questions. Please submit a document or URL first."), 400
     if question.lower() in ["exit", "quit"]:
         return jsonify(answer="Chatbot session ended.")
-    answer = chain.invoke(question)                                     # Get the answer using the QA chain
+    answer = chain.invoke(question)
     return jsonify(answer=answer)
 
-#################################################################################################################################
-
-# Run the Flask application
 if __name__ == '__main__':
+    if not os.path.exists('uploads'):
+        os.makedirs('uploads')
     app.run(debug=True)

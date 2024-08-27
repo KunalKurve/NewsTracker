@@ -2,21 +2,22 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <!-- Ensure the webpage is properly rendered on different devices -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NewsTraker</title>
-    <!-- Include Bootstrap CSS for styling -->
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
 </head>
 <body>
     <div class="container mt-5">
-        <h1 class="text-center"> NewsTraker: News Article Summarizer with Q&A Bot</h1>
+        <h1 class="text-center">NewsTracker: News Article Summarizer with Q&A Bot</h1>
         <div class="mt-4">
-            <!-- Form to input URL for web scraping -->
-            <form id="scrape-form">
+            <form id="scrape-form" enctype="multipart/form-data">
                 <div class="form-group">
                     <label for="url">Enter URL:</label>
-                    <input type="text" class="form-control" id="url" required>
+                    <input type="text" class="form-control" id="url" name="url">
+                </div>
+                <div class="form-group">
+                    <label for="file">Or Upload a PDF File:</label>
+                    <input type="file" class="form-control-file" id="file" name="file">
                 </div>
                 <button type="submit" class="btn btn-primary">Get Summary</button>
             </form>
@@ -26,7 +27,6 @@
             <p id="summary-text"></p>
             <hr>
             <h3>Ask a Question</h3>
-            <!-- Form to input question for the chatbot -->
             <form id="chat-form">
                 <div class="form-group">
                     <label for="question">Enter your question:</label>
@@ -40,31 +40,37 @@
             </div>
         </div>
     </div>
-    <!-- Include jQuery for handling form submissions and AJAX requests -->
     <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
     <script>
         $(document).ready(function() {
-            // Handle form submission for scraping the article
             $('#scrape-form').on('submit', function(e) {
                 e.preventDefault();
-                var url = $('#url').val();
-                // Send a POST request to the server to get the summary
-                $.post('/summarize', {url: url}, function(data) {
-                    $('#summary-text').text(data.summary);
-                    $('#summary-section').show();
+                
+                var formData = new FormData(this);
+                
+                $.ajax({
+                    url: '/summarize',
+                    type: 'POST',
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function(data) {
+                        $('#summary-text').text(data.summary);
+                        $('#summary-section').show();
+                    },
+                    error: function(xhr, status, error) {
+                        alert('Error: ' + error);
+                    }
                 });
             });
 
-            // Handle form submission for asking a question
             $('#chat-form').on('submit', function(e) {
                 e.preventDefault();
                 askQuestion();
             });
 
-            // Function to send a question to the server and get the answer
             function askQuestion() {
                 var question = $('#question').val();
-                // Send a POST request to the server to get the answer
                 $.post('/ask', {question: question}, function(data) {
                     if (data.answer.toLowerCase() === 'chatbot session ended.') {
                         $('#response-text').text(data.answer);
